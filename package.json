@@ -1,0 +1,18 @@
+{
+  "name": "train-to-take",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker that recommends 6 vs Q+R/W for my morning commute.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "gtfs-realtime-bindings": "^1.1.1"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}
