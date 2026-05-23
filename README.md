@@ -14,8 +14,12 @@ git push origin main
 
 ## Try it
 
+Open `https://train-to-take.<your-subdomain>.workers.dev/` in a browser for the minimalist read-only page.
+
+For JSON (iOS Shortcut, scripts):
+
 ```
-curl https://train-to-take.<your-subdomain>.workers.dev/
+curl https://train-to-take.<your-subdomain>.workers.dev/api
 ```
 
 Response shape:
@@ -35,7 +39,7 @@ Response shape:
 
 ## iOS Shortcut
 
-1. **Get Contents of URL** → `https://train-to-take.<your-subdomain>.workers.dev/`
+1. **Get Contents of URL** → `https://train-to-take.<your-subdomain>.workers.dev/api`
 2. **Get Dictionary Value** → key `recommendation` (save as "Rec")
 3. **Get Dictionary Value** (on the same URL result) → key `reason` (save as "Why")
 4. **Show Notification** → `Take the [Rec]. [Why]`
