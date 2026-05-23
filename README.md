@@ -14,8 +14,12 @@ git push origin main
 
 ## Try it
 
+Open `https://train-to-take.<your-subdomain>.workers.dev/` in a browser for the minimalist read-only page.
+
+For JSON (iOS Shortcut, scripts):
+
 ```
-curl https://train-to-take.<your-subdomain>.workers.dev/
+curl https://train-to-take.<your-subdomain>.workers.dev/api
 ```
 
 Response shape:
@@ -35,7 +39,7 @@ Response shape:
 
 ## iOS Shortcut
 
-1. **Get Contents of URL** → `https://train-to-take.<your-subdomain>.workers.dev/`
+1. **Get Contents of URL** → `https://train-to-take.<your-subdomain>.workers.dev/api`
 2. **Get Dictionary Value** → key `recommendation` (save as "Rec")
 3. **Get Dictionary Value** (on the same URL result) → key `reason` (save as "Why")
 4. **Show Notification** → `Take the [Rec]. [Why]`
@@ -48,7 +52,7 @@ All commute-specific knobs live in the `CONFIG` block at the top of `src/index.j
 
 ## Things to verify
 
-- [ ] **Stop IDs.** The placeholders `626S`, `Q05S`, `R20S` are best guesses. Confirm against MTA's [stops.txt](http://web.mta.info/developers/data/nyct/subway/google_transit.zip). `R20S` in particular may need to be `R17S` for 34 St-Herald Sq — if Option B always shows no trains, flip it.
-- [ ] **Feed URLs.** The NYCT endpoints at `api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2F...` were unauthenticated as of 2024. Re-check at https://api.mta.info/#/subwayRealTimeFeeds if the worker starts returning `degraded: true`.
+- [x] **Stop IDs.** Verified against MTA `stops.txt`: `626S` (86 St Lex, 6), `Q04S` (86 St 2 Av, Q), `R17S` (34 St-Herald Sq, R/W).
+- [x] **Feed URLs.** `api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2F...` is current as of 2026 and still unauthenticated. Re-check at https://api.mta.info/#/subwayRealTimeFeeds if the worker starts returning `degraded: true`.
 - [ ] **Ride-time constants.** `RIDE_6_86_TO_28`, `RIDE_Q_86_TO_HERALD`, `RIDE_RW_HERALD_TO_28` are rough. After a week of real trips, replace with your actual averages.
 - [ ] **Walk times.** `WALK_TO_LEX_86` and friends are door-to-turnstile-to-door. Tune after a few runs.

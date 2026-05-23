@@ -18,11 +18,10 @@ const CONFIG = {
 
   // --- Stop IDs -----------------------------------------------------------
   // NYCT GTFS stops have an N/S suffix for direction (e.g. 626 → 626S).
-  // TODO: verify against MTA's stops.txt before trusting these:
-  //   http://web.mta.info/developers/data/nyct/subway/google_transit.zip
+  // Verified against MTA stops.txt: 626=86 St Lex, Q04=86 St 2 Av, R17=Herald Sq.
   STOP_6_LEX_86_S: '626S',  // 86 St (Lexington Av) southbound — 6 train
-  STOP_Q_86_2AV_S: 'Q05S',  // 86 St (2nd Av) southbound — Q train
-  STOP_RW_HERALD_S: 'R20S', // 34 St-Herald Sq southbound — R/W (might be R17S; confirm)
+  STOP_Q_86_2AV_S: 'Q04S',  // 86 St (2nd Av) southbound — Q train
+  STOP_RW_HERALD_S: 'R17S', // 34 St-Herald Sq southbound — R/W
 
   // --- MTA GTFS-Realtime feeds (no API key required as of 2024) -----------
   // Verify current URLs at https://api.mta.info/#/subwayRealTimeFeeds
@@ -153,34 +152,30 @@ function buildReason(winner, loser) {
   return `Q+R/W gets you there ${saved} min sooner (next Q in ${winner.nextTrainMinutes} min, next 6 in ${loser.nextTrainMinutes} min)`;
 }
 
-export default {
-  async fetch() {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const [irtResult, nqrwResult] = await Promise.allSettled([
-      fetchFeed(CONFIG.FEED_IRT),
-      fetchFeed(CONFIG.FEED_NQRW),
-    ]);
+async function compute() {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const [irtResult, nqrwResult] = await Promise.allSettled([
+    fetchFeed(CONFIG.FEED_IRT),
+    fetchFeed(CONFIG.FEED_NQRW),
+  ]);
 
-    const irtOk = irtResult.status === 'fulfilled';
-    const nqrwOk = nqrwResult.status === 'fulfilled';
+  const irtOk = irtResult.status === 'fulfilled';
+  const nqrwOk = nqrwResult.status === 'fulfilled';
 
-    const options = [];
-    if (irtOk) {
-      const a = buildOptionA(irtResult.value, nowSec);
-      if (a) options.push(a);
-    }
-    if (nqrwOk) {
-      const b = buildOptionB(nqrwResult.value, nowSec);
-      if (b) options.push(b);
-    }
+  const options = [];
+  if (irtOk) {
+    const a = buildOptionA(irtResult.value, nowSec);
+    if (a) options.push(a);
+  }
+  if (nqrwOk) {
+    const b = buildOptionB(nqrwResult.value, nowSec);
+    if (b) options.push(b);
+  }
 
-    const headers = {
-      'content-type': 'application/json',
-      'cache-control': 'no-store',
-    };
-
-    if (options.length === 0) {
-      return new Response(JSON.stringify({
+  if (options.length === 0) {
+    return {
+      status: 502,
+      body: {
         recommendation: null,
         reason: irtOk || nqrwOk
           ? 'No upcoming trains in the realtime feed. Check stop IDs.'
@@ -188,18 +183,97 @@ export default {
         options: [],
         fetchedAt: new Date().toISOString(),
         degraded: true,
-      }), { status: 502, headers });
-    }
+      },
+    };
+  }
 
-    const winner = options.reduce((a, b) => (a.totalMinutes <= b.totalMinutes ? a : b));
-    const loser = options.find(o => o !== winner) || null;
+  const winner = options.reduce((a, b) => (a.totalMinutes <= b.totalMinutes ? a : b));
+  const loser = options.find(o => o !== winner) || null;
 
-    return new Response(JSON.stringify({
+  return {
+    status: 200,
+    body: {
       recommendation: winner.label,
       reason: buildReason(winner, loser),
       options,
       fetchedAt: new Date().toISOString(),
       degraded: !irtOk || !nqrwOk,
-    }), { headers });
+    },
+  };
+}
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function renderHtml({ recommendation, reason, options, fetchedAt, degraded }) {
+  const winner = recommendation && options.find((o) => o.label === recommendation);
+  const headline = winner ? `Take the ${recommendation}` : 'No trains';
+  const stats = winner
+    ? `${winner.nextTrainMinutes} min to train · ${winner.totalMinutes} min total`
+    : '';
+  const time = new Date(fetchedAt).toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
+  });
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)">
+<title>${esc(headline)}</title>
+<style>
+:root { color-scheme: light dark; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 400 18px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex; flex-direction: column; justify-content: center; align-items: center;
+  padding: 2rem; text-align: center; box-sizing: border-box;
+  background: #fff; color: #111;
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #111; color: #f5f5f5; }
+}
+h1 {
+  font-size: clamp(2.75rem, 11vw, 4.5rem);
+  font-weight: 600; letter-spacing: -.03em;
+  margin: 0 0 .75rem;
+}
+.stats { font-variant-numeric: tabular-nums; margin: 0 0 1.25rem; }
+.reason { max-width: 28ch; margin: 0 0 2.5rem; color: #777; }
+.foot { font-size: .8rem; color: #999; }
+@media (prefers-color-scheme: dark) {
+  .reason { color: #aaa; }
+  .foot { color: #777; }
+}
+</style>
+</head>
+<body>
+<h1>${esc(headline)}</h1>
+${stats ? `<p class="stats">${esc(stats)}</p>` : ''}
+<p class="reason">${esc(reason)}</p>
+<p class="foot">${esc(time)}${degraded ? ' · degraded' : ''}</p>
+</body>
+</html>`;
+}
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    const result = await compute();
+
+    if (url.pathname === '/api') {
+      return new Response(JSON.stringify(result.body), {
+        status: result.status,
+        headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+      });
+    }
+    if (url.pathname === '/') {
+      return new Response(renderHtml(result.body), {
+        status: result.status,
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
+    return new Response('Not found', { status: 404 });
   },
 };
