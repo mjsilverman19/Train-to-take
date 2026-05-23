@@ -18,11 +18,10 @@ const CONFIG = {
 
   // --- Stop IDs -----------------------------------------------------------
   // NYCT GTFS stops have an N/S suffix for direction (e.g. 626 → 626S).
-  // TODO: verify against MTA's stops.txt before trusting these:
-  //   http://web.mta.info/developers/data/nyct/subway/google_transit.zip
+  // Verified against MTA stops.txt: 626=86 St Lex, Q04=86 St 2 Av, R17=Herald Sq.
   STOP_6_LEX_86_S: '626S',  // 86 St (Lexington Av) southbound — 6 train
-  STOP_Q_86_2AV_S: 'Q05S',  // 86 St (2nd Av) southbound — Q train
-  STOP_RW_HERALD_S: 'R20S', // 34 St-Herald Sq southbound — R/W (might be R17S; confirm)
+  STOP_Q_86_2AV_S: 'Q04S',  // 86 St (2nd Av) southbound — Q train
+  STOP_RW_HERALD_S: 'R17S', // 34 St-Herald Sq southbound — R/W
 
   // --- MTA GTFS-Realtime feeds (no API key required as of 2024) -----------
   // Verify current URLs at https://api.mta.info/#/subwayRealTimeFeeds
