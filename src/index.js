@@ -85,6 +85,12 @@ function buildOptionA(irtFeed, nowSec) {
     label: '6',
     totalMinutes,
     nextTrainMinutes,
+    legs: [
+      { label: 'walk', minutes: CONFIG.WALK_TO_LEX_86 },
+      { label: 'wait', minutes: waitAtStation },
+      { label: '6', minutes: CONFIG.RIDE_6_86_TO_28 },
+      { label: 'walk', minutes: CONFIG.WALK_28ST_LEX_TO_WORK },
+    ],
     breakdown: {
       walkToStation: CONFIG.WALK_TO_LEX_86,
       waitAtStation,
@@ -128,6 +134,14 @@ function buildOptionB(nqrwFeed, nowSec) {
     label: 'Q+R/W',
     totalMinutes,
     nextTrainMinutes,
+    legs: [
+      { label: 'walk', minutes: CONFIG.WALK_TO_2AV_86 },
+      { label: 'wait', minutes: waitForQ },
+      { label: 'Q', minutes: CONFIG.RIDE_Q_86_TO_HERALD },
+      { label: 'Herald', minutes: waitForRW },
+      { label: 'R/W', minutes: CONFIG.RIDE_RW_HERALD_TO_28 },
+      { label: 'walk', minutes: CONFIG.WALK_28ST_BMT_TO_WORK },
+    ],
     breakdown: {
       walkToStation: CONFIG.WALK_TO_2AV_86,
       waitForQ,
@@ -205,6 +219,17 @@ async function compute() {
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+function renderLegs(legs) {
+  return legs.map((l) => `${esc(l.label)} ${l.minutes}m`).join(' → ');
+}
+
+function renderOption(opt, isWinner) {
+  return `<section class="option${isWinner ? ' winner' : ''}">
+  <h2>via ${esc(opt.label)} · ${opt.totalMinutes} min</h2>
+  <p class="legs">${renderLegs(opt.legs || [])}</p>
+</section>`;
+}
+
 function renderHtml({ recommendation, reason, options, fetchedAt, degraded }) {
   const winner = recommendation && options.find((o) => o.label === recommendation);
   const headline = winner ? `Take the ${recommendation}` : 'No trains';
@@ -214,6 +239,11 @@ function renderHtml({ recommendation, reason, options, fetchedAt, degraded }) {
   const time = new Date(fetchedAt).toLocaleTimeString('en-US', {
     hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
   });
+  const optionBlocks = options
+    .slice()
+    .sort((a, b) => (a.label === recommendation ? -1 : b.label === recommendation ? 1 : 0))
+    .map((o) => renderOption(o, o.label === recommendation))
+    .join('\n');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -224,26 +254,41 @@ function renderHtml({ recommendation, reason, options, fetchedAt, degraded }) {
 <title>${esc(headline)}</title>
 <style>
 :root { color-scheme: light dark; }
-html, body { margin: 0; height: 100%; }
+html, body { margin: 0; min-height: 100%; }
 body {
   font: 400 18px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   display: flex; flex-direction: column; justify-content: center; align-items: center;
-  padding: 2rem; text-align: center; box-sizing: border-box;
+  padding: 2.5rem 1.5rem; text-align: center; box-sizing: border-box;
   background: #fff; color: #111;
 }
 @media (prefers-color-scheme: dark) {
   body { background: #111; color: #f5f5f5; }
 }
 h1 {
-  font-size: clamp(2.75rem, 11vw, 4.5rem);
+  font-size: clamp(2.5rem, 10vw, 4rem);
   font-weight: 600; letter-spacing: -.03em;
-  margin: 0 0 .75rem;
+  margin: 0 0 .5rem;
 }
-.stats { font-variant-numeric: tabular-nums; margin: 0 0 1.25rem; }
-.reason { max-width: 28ch; margin: 0 0 2.5rem; color: #777; }
-.foot { font-size: .8rem; color: #999; }
+.stats { font-variant-numeric: tabular-nums; margin: 0 0 1rem; }
+.reason { max-width: 28ch; margin: 0 0 2rem; color: #777; }
+.options { width: 100%; max-width: 32rem; margin: 0 0 2rem; }
+.option { margin: 0 0 1.25rem; }
+.option h2 {
+  font-size: 1rem; font-weight: 500; margin: 0 0 .25rem;
+  letter-spacing: .02em; text-transform: uppercase; color: #888;
+}
+.option.winner h2 { color: inherit; font-weight: 600; }
+.legs {
+  font-variant-numeric: tabular-nums;
+  margin: 0; color: #aaa;
+  word-spacing: .1em;
+}
+.option.winner .legs { color: inherit; }
+.foot { font-size: .8rem; color: #999; margin: 0; }
 @media (prefers-color-scheme: dark) {
   .reason { color: #aaa; }
+  .option h2 { color: #666; }
+  .legs { color: #666; }
   .foot { color: #777; }
 }
 </style>
@@ -252,6 +297,7 @@ h1 {
 <h1>${esc(headline)}</h1>
 ${stats ? `<p class="stats">${esc(stats)}</p>` : ''}
 <p class="reason">${esc(reason)}</p>
+${options.length ? `<div class="options">${optionBlocks}</div>` : ''}
 <p class="foot">${esc(time)}${degraded ? ' · degraded' : ''}</p>
 </body>
 </html>`;
