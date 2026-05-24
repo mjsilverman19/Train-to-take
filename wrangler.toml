@@ -7,9 +7,7 @@ compatibility_date = "2025-01-01"
 [triggers]
 crons = ["0 13,14 * * 1-5"]
 
-# To enable /history logging, create a KV namespace named "train-history"
-# in the Cloudflare dashboard (Workers & Pages → KV → Create namespace),
-# copy its ID, and uncomment + paste below.
-# [[kv_namespaces]]
-# binding = "HISTORY"
-# id = "PASTE_KV_NAMESPACE_ID_HERE"
+# Stores one snapshot per weekday written by the scheduled handler.
+[[kv_namespaces]]
+binding = "HISTORY"
+id = "0e2ed4867a3f4c1faab06bf1083ca89a"
