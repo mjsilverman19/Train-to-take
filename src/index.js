@@ -336,11 +336,112 @@ ${options.length ? `<div class="options">${optionBlocks}</div>` : ''}
 </html>`;
 }
 
-export default {
-  async fetch(request) {
-    const url = new URL(request.url);
-    const result = await compute();
+function nyDateKey(date = new Date()) {
+  return date.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
 
+function formatHistoryDate(yyyyMmDd) {
+  const [y, m, d] = yyyyMmDd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC',
+  });
+}
+
+function renderHistoryHtml(entries, message) {
+  const body = entries.length
+    ? `<table>
+<thead><tr><th>Date</th><th>Pick</th><th>6</th><th>Q+R/W</th></tr></thead>
+<tbody>
+${entries.map((e) => {
+  const d = e.data;
+  if (!d) return `<tr><td>${esc(formatHistoryDate(e.date))}</td><td colspan="3" class="muted">no data</td></tr>`;
+  const cell = (label) => {
+    const o = d.options.find((opt) => opt.label === label);
+    if (!o) return '—';
+    if (o.unavailable) return '—';
+    return `${o.totalMinutes}m`;
+  };
+  return `<tr>
+  <td>${esc(formatHistoryDate(e.date))}</td>
+  <td>${esc(d.recommendation || '—')}</td>
+  <td>${esc(cell('6'))}</td>
+  <td>${esc(cell('Q+R/W'))}</td>
+</tr>`;
+}).join('\n')}
+</tbody>
+</table>`
+    : `<p class="muted">${esc(message || 'No entries yet — cron logs once per weekday at 9 AM ET.')}</p>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>history · 9 AM ET</title>
+<style>
+:root { color-scheme: light dark; }
+body {
+  font: 400 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  max-width: 30rem; margin: 0 auto; padding: 2rem 1.5rem;
+  background: #fff; color: #111;
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #111; color: #f5f5f5; }
+}
+h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: -.01em; margin: 0 0 1.25rem; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: .5rem .25rem; border-bottom: 1px solid #eee; }
+@media (prefers-color-scheme: dark) { th, td { border-color: #2a2a2a; } }
+th { font-weight: 500; color: #888; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+.muted { color: #888; }
+.back { font-size: .9rem; color: #888; margin-top: 1.5rem; }
+a { color: inherit; }
+</style>
+</head>
+<body>
+<h1>history · 9 AM ET</h1>
+${body}
+<p class="back"><a href="/">← back</a></p>
+</body>
+</html>`;
+}
+
+async function handleHistory(env) {
+  const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+  if (!env || !env.HISTORY) {
+    return new Response(
+      renderHistoryHtml([], 'History storage not configured — KV binding "HISTORY" missing.'),
+      { status: 200, headers }
+    );
+  }
+  const list = await env.HISTORY.list({ limit: 90 });
+  const entries = await Promise.all(
+    list.keys.map(async (k) => ({
+      date: k.name,
+      data: JSON.parse((await env.HISTORY.get(k.name)) || 'null'),
+    }))
+  );
+  entries.sort((a, b) => b.date.localeCompare(a.date));
+  return new Response(renderHistoryHtml(entries), { status: 200, headers });
+}
+
+async function logResult(env, ctx) {
+  if (!env || !env.HISTORY) return;
+  const result = await compute();
+  const key = nyDateKey();
+  const promise = env.HISTORY.put(key, JSON.stringify(result.body), {
+    expirationTtl: 60 * 60 * 24 * 180,
+  });
+  if (ctx && ctx.waitUntil) ctx.waitUntil(promise);
+  else await promise;
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/history') return handleHistory(env);
+
+    const result = await compute();
     if (url.pathname === '/api') {
       return new Response(JSON.stringify(result.body), {
         status: result.status,
@@ -354,5 +455,17 @@ export default {
       });
     }
     return new Response('Not found', { status: 404 });
+  },
+
+  async scheduled(event, env, ctx) {
+    // Cron fires at 13:00 and 14:00 UTC daily on weekdays — only one is 9 AM ET
+    // depending on DST. Filter to 9 AM ET locally.
+    const nyHour = Number(
+      new Date().toLocaleString('en-US', {
+        timeZone: 'America/New_York', hour: 'numeric', hour12: false,
+      })
+    );
+    if (nyHour !== 9) return;
+    await logResult(env, ctx);
   },
 };
