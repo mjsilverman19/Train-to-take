@@ -18,10 +18,13 @@ const CONFIG = {
 
   // --- Stop IDs -----------------------------------------------------------
   // NYCT GTFS stops have an N/S suffix for direction (e.g. 626 → 626S).
-  // Verified against MTA stops.txt: 626=86 St Lex, Q04=86 St 2 Av, R17=Herald Sq.
+  // Verified against MTA stops.txt: 626=86 St Lex, Q04=86 St 2 Av,
+  // R17=Herald Sq, 633=28 St Lex, R18=28 St BMT.
   STOP_6_LEX_86_S: '626S',  // 86 St (Lexington Av) southbound — 6 train
+  STOP_6_LEX_28_S: '633S',  // 28 St (Lexington Av) southbound — destination check
   STOP_Q_86_2AV_S: 'Q04S',  // 86 St (2nd Av) southbound — Q train
   STOP_RW_HERALD_S: 'R17S', // 34 St-Herald Sq southbound — R/W
+  STOP_RW_28_S: 'R18S',     // 28 St (Broadway) southbound — destination check
 
   // --- MTA GTFS-Realtime feeds (no API key required as of 2024) -----------
   // Verify current URLs at https://api.mta.info/#/subwayRealTimeFeeds
@@ -31,7 +34,10 @@ const CONFIG = {
   // --- Behavior -----------------------------------------------------------
   WINDOW_MIN: 30,              // ignore arrivals this far in the future
   FALLBACK_RW_WAIT_MIN: 4,     // assume this if no realtime R/W data yet
-  ROUTES_OPTION_A: ['6'],
+  // 4 and 5 are included because on weekends/track work they sometimes
+  // run on the Lex local and stop at 86 St and 28 St. The dest-stop check
+  // in upcomingArrivals ensures we don't include them when they're express.
+  ROUTES_OPTION_A: ['6', '4', '5'],
   ROUTES_OPTION_B_LEG1: ['Q'],
   ROUTES_OPTION_B_LEG2: ['R', 'W'],
 };
@@ -47,10 +53,11 @@ async function fetchFeed(url) {
   return FeedMessage.decode(new Uint8Array(buf));
 }
 
-// Returns sorted array of unix-second timestamps for upcoming arrivals at
+// Returns sorted array of {time, routeId} for upcoming arrivals at
 // `stopId` on any of `routes`, filtered to [earliestSec, maxSec]. maxSec
 // defaults to nowSec + CONFIG.WINDOW_MIN; pass a larger value to look further.
-function upcomingArrivals(feed, stopId, routes, nowSec, earliestSec, maxSec) {
+// If `destStopId` is provided, only trips that also stop there are included.
+function upcomingArrivals(feed, stopId, routes, nowSec, earliestSec, maxSec, destStopId) {
   const out = [];
   const ceiling = maxSec ?? (nowSec + CONFIG.WINDOW_MIN * 60);
   const floor = earliestSec ?? nowSec;
@@ -59,48 +66,56 @@ function upcomingArrivals(feed, stopId, routes, nowSec, earliestSec, maxSec) {
     if (!tu) continue;
     const routeId = tu.trip && tu.trip.routeId;
     if (!routes.includes(routeId)) continue;
-    for (const stu of tu.stopTimeUpdate || []) {
+    const stus = tu.stopTimeUpdate || [];
+    if (destStopId && !stus.some((s) => s.stopId === destStopId)) continue;
+    for (const stu of stus) {
       if (stu.stopId !== stopId) continue;
       const raw = (stu.arrival && stu.arrival.time) || (stu.departure && stu.departure.time);
       if (!raw) continue;
       const t = typeof raw === 'number' ? raw : Number(raw);
       if (!t || t < floor || t > ceiling) continue;
-      out.push(t);
+      out.push({ time: t, routeId });
     }
   }
-  out.sort((a, b) => a - b);
+  out.sort((a, b) => a.time - b.time);
   return out;
 }
 
 const minFromNow = (sec, nowSec) => Math.max(0, Math.round((sec - nowSec) / 60));
 
-function unavailableOption(label, feed, stopId, routes, nowSec) {
-  const far = upcomingArrivals(feed, stopId, routes, nowSec, nowSec, nowSec + 120 * 60);
+function unavailableOption(label, feed, stopId, routes, nowSec, destStopId) {
+  const far = upcomingArrivals(feed, stopId, routes, nowSec, nowSec, nowSec + 120 * 60, destStopId);
+  const name = label.split('+')[0];
   return {
     label,
     unavailable: true,
     reason: far[0]
-      ? `next ${label.split('+')[0]} not for ${minFromNow(far[0], nowSec)} min — beyond ${CONFIG.WINDOW_MIN}-min window`
-      : `no ${label.split('+')[0]} trains found at the stop in the next 2 hrs — likely a service change`,
+      ? `next ${name} not for ${minFromNow(far[0].time, nowSec)} min — beyond ${CONFIG.WINDOW_MIN}-min window`
+      : `no ${name} trains found at the stop in the next 2 hrs — likely a service change`,
   };
 }
 
 function buildOptionA(irtFeed, nowSec) {
   const earliest = nowSec + CONFIG.WALK_TO_LEX_86 * 60;
-  const arrivals = upcomingArrivals(irtFeed, CONFIG.STOP_6_LEX_86_S, CONFIG.ROUTES_OPTION_A, nowSec, earliest);
+  const arrivals = upcomingArrivals(
+    irtFeed, CONFIG.STOP_6_LEX_86_S, CONFIG.ROUTES_OPTION_A, nowSec, earliest, undefined, CONFIG.STOP_6_LEX_28_S
+  );
   const next = arrivals[0];
-  if (!next) return unavailableOption('6', irtFeed, CONFIG.STOP_6_LEX_86_S, CONFIG.ROUTES_OPTION_A, nowSec);
-  const nextTrainMinutes = minFromNow(next, nowSec);
+  if (!next) {
+    return unavailableOption('Lex', irtFeed, CONFIG.STOP_6_LEX_86_S, CONFIG.ROUTES_OPTION_A, nowSec, CONFIG.STOP_6_LEX_28_S);
+  }
+  const nextTrainMinutes = minFromNow(next.time, nowSec);
   const waitAtStation = Math.max(0, nextTrainMinutes - CONFIG.WALK_TO_LEX_86);
   const totalMinutes = CONFIG.WALK_TO_LEX_86 + waitAtStation + CONFIG.RIDE_6_86_TO_28 + CONFIG.WALK_28ST_LEX_TO_WORK;
   return {
-    label: '6',
+    label: 'Lex',
+    route: next.routeId,
     totalMinutes,
     nextTrainMinutes,
     legs: [
       { label: 'walk', minutes: CONFIG.WALK_TO_LEX_86 },
       { label: 'wait', minutes: waitAtStation },
-      { label: '6', minutes: CONFIG.RIDE_6_86_TO_28 },
+      { label: next.routeId, minutes: CONFIG.RIDE_6_86_TO_28 },
       { label: 'walk', minutes: CONFIG.WALK_28ST_LEX_TO_WORK },
     ],
     breakdown: {
@@ -118,20 +133,25 @@ function buildOptionB(nqrwFeed, nowSec) {
   const nextQ = qArrivals[0];
   if (!nextQ) return unavailableOption('Q+R/W', nqrwFeed, CONFIG.STOP_Q_86_2AV_S, CONFIG.ROUTES_OPTION_B_LEG1, nowSec);
 
-  const qArrivesAtHerald = nextQ + CONFIG.RIDE_Q_86_TO_HERALD * 60;
-  const rwArrivals = upcomingArrivals(nqrwFeed, CONFIG.STOP_RW_HERALD_S, CONFIG.ROUTES_OPTION_B_LEG2, nowSec, qArrivesAtHerald);
+  const qArrivesAtHerald = nextQ.time + CONFIG.RIDE_Q_86_TO_HERALD * 60;
+  const rwArrivals = upcomingArrivals(
+    nqrwFeed, CONFIG.STOP_RW_HERALD_S, CONFIG.ROUTES_OPTION_B_LEG2, nowSec, qArrivesAtHerald, undefined, CONFIG.STOP_RW_28_S
+  );
   const nextRW = rwArrivals[0];
 
-  const nextTrainMinutes = minFromNow(nextQ, nowSec);
+  const nextTrainMinutes = minFromNow(nextQ.time, nowSec);
   const waitForQ = Math.max(0, nextTrainMinutes - CONFIG.WALK_TO_2AV_86);
   let waitForRW;
   let rwRealtime;
+  let rwRoute;
   if (nextRW) {
-    waitForRW = Math.max(0, Math.round((nextRW - qArrivesAtHerald) / 60));
+    waitForRW = Math.max(0, Math.round((nextRW.time - qArrivesAtHerald) / 60));
     rwRealtime = true;
+    rwRoute = nextRW.routeId;
   } else {
     waitForRW = CONFIG.FALLBACK_RW_WAIT_MIN;
     rwRealtime = false;
+    rwRoute = 'R/W';
   }
 
   const totalMinutes =
@@ -144,14 +164,15 @@ function buildOptionB(nqrwFeed, nowSec) {
 
   return {
     label: 'Q+R/W',
+    route: `${nextQ.routeId}+${rwRoute}`,
     totalMinutes,
     nextTrainMinutes,
     legs: [
       { label: 'walk', minutes: CONFIG.WALK_TO_2AV_86 },
       { label: 'wait', minutes: waitForQ },
-      { label: 'Q', minutes: CONFIG.RIDE_Q_86_TO_HERALD },
+      { label: nextQ.routeId, minutes: CONFIG.RIDE_Q_86_TO_HERALD },
       { label: 'Herald', minutes: waitForRW },
-      { label: 'R/W', minutes: CONFIG.RIDE_RW_HERALD_TO_28 },
+      { label: rwRoute, minutes: CONFIG.RIDE_RW_HERALD_TO_28 },
       { label: 'walk', minutes: CONFIG.WALK_28ST_BMT_TO_WORK },
     ],
     breakdown: {
@@ -174,13 +195,15 @@ function buildReason(winner, loser, allOptions) {
       : `${winner.label} in ${winner.nextTrainMinutes} min`;
   }
   const saved = loser.totalMinutes - winner.totalMinutes;
-  if (winner.label === '6') {
+  const winRoute = winner.route || winner.label;
+  const loseRoute = loser.route || loser.label;
+  if (winner.label === 'Lex') {
     const heraldNote = loser.breakdown.waitForRW > 0
       ? `, ${loser.breakdown.waitForRW} min wait at Herald`
       : '';
-    return `6 in ${winner.nextTrainMinutes} min beats Q+R/W (next Q in ${loser.nextTrainMinutes} min${heraldNote})`;
+    return `${winRoute} in ${winner.nextTrainMinutes} min beats ${loseRoute} (next Q in ${loser.nextTrainMinutes} min${heraldNote})`;
   }
-  return `Q+R/W gets you there ${saved} min sooner (next Q in ${winner.nextTrainMinutes} min, next 6 in ${loser.nextTrainMinutes} min)`;
+  return `${winRoute} gets you there ${saved} min sooner (next Q in ${winner.nextTrainMinutes} min, next ${loser.route || 'Lex'} in ${loser.nextTrainMinutes} min)`;
 }
 
 async function compute() {
@@ -195,7 +218,7 @@ async function compute() {
 
   const optionA = irtOk
     ? buildOptionA(irtResult.value, nowSec)
-    : { label: '6', unavailable: true, reason: 'IRT feed (1/2/3/4/5/6/7) failed — try again in a minute' };
+    : { label: 'Lex', unavailable: true, reason: 'IRT feed (1/2/3/4/5/6/7) failed — try again in a minute' };
   const optionB = nqrwOk
     ? buildOptionB(nqrwResult.value, nowSec)
     : { label: 'Q+R/W', unavailable: true, reason: 'NQRW feed failed — try again in a minute' };
@@ -243,21 +266,23 @@ function renderLegs(legs) {
 }
 
 function renderOption(opt, isWinner) {
+  const display = opt.route || opt.label;
   if (opt.unavailable) {
     return `<section class="option unavailable">
-  <h2>via ${esc(opt.label)} · —</h2>
+  <h2>via ${esc(display)} · —</h2>
   <p class="legs">${esc(opt.reason || 'unavailable')}</p>
 </section>`;
   }
   return `<section class="option${isWinner ? ' winner' : ''}">
-  <h2>via ${esc(opt.label)} · ${opt.totalMinutes} min</h2>
+  <h2>via ${esc(display)} · ${opt.totalMinutes} min</h2>
   <p class="legs">${renderLegs(opt.legs || [])}</p>
 </section>`;
 }
 
 function renderHtml({ recommendation, reason, options, fetchedAt, degraded }) {
   const winner = recommendation && options.find((o) => o.label === recommendation);
-  const headline = winner ? `Take the ${recommendation}` : 'No trains';
+  const displayLabel = winner ? (winner.route || winner.label) : '';
+  const headline = winner ? `Take the ${displayLabel}` : 'No trains';
   const stats = winner
     ? `${winner.nextTrainMinutes} min to train · ${winner.totalMinutes} min total`
     : '';
@@ -350,21 +375,22 @@ function formatHistoryDate(yyyyMmDd) {
 function renderHistoryHtml(entries, message) {
   const body = entries.length
     ? `<table>
-<thead><tr><th>Date</th><th>Pick</th><th>6</th><th>Q+R/W</th></tr></thead>
+<thead><tr><th>Date</th><th>Pick</th><th>Lex</th><th>Q+R/W</th></tr></thead>
 <tbody>
 ${entries.map((e) => {
   const d = e.data;
   if (!d) return `<tr><td>${esc(formatHistoryDate(e.date))}</td><td colspan="3" class="muted">no data</td></tr>`;
   const cell = (label) => {
     const o = d.options.find((opt) => opt.label === label);
-    if (!o) return '—';
-    if (o.unavailable) return '—';
+    if (!o || o.unavailable) return '—';
     return `${o.totalMinutes}m`;
   };
+  const winner = d.recommendation ? d.options.find((o) => o.label === d.recommendation) : null;
+  const pick = winner ? (winner.route || winner.label) : '—';
   return `<tr>
   <td>${esc(formatHistoryDate(e.date))}</td>
-  <td>${esc(d.recommendation || '—')}</td>
-  <td>${esc(cell('6'))}</td>
+  <td>${esc(pick)}</td>
+  <td>${esc(cell('Lex'))}</td>
   <td>${esc(cell('Q+R/W'))}</td>
 </tr>`;
 }).join('\n')}
