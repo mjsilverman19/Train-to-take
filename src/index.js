@@ -48,10 +48,11 @@ async function fetchFeed(url) {
 }
 
 // Returns sorted array of unix-second timestamps for upcoming arrivals at
-// `stopId` on any of `routes`, filtered to [earliestSec, nowSec + window].
-function upcomingArrivals(feed, stopId, routes, nowSec, earliestSec) {
+// `stopId` on any of `routes`, filtered to [earliestSec, maxSec]. maxSec
+// defaults to nowSec + CONFIG.WINDOW_MIN; pass a larger value to look further.
+function upcomingArrivals(feed, stopId, routes, nowSec, earliestSec, maxSec) {
   const out = [];
-  const maxSec = nowSec + CONFIG.WINDOW_MIN * 60;
+  const ceiling = maxSec ?? (nowSec + CONFIG.WINDOW_MIN * 60);
   const floor = earliestSec ?? nowSec;
   for (const entity of feed.entity || []) {
     const tu = entity.tripUpdate;
@@ -63,7 +64,7 @@ function upcomingArrivals(feed, stopId, routes, nowSec, earliestSec) {
       const raw = (stu.arrival && stu.arrival.time) || (stu.departure && stu.departure.time);
       if (!raw) continue;
       const t = typeof raw === 'number' ? raw : Number(raw);
-      if (!t || t < floor || t > maxSec) continue;
+      if (!t || t < floor || t > ceiling) continue;
       out.push(t);
     }
   }
@@ -73,11 +74,22 @@ function upcomingArrivals(feed, stopId, routes, nowSec, earliestSec) {
 
 const minFromNow = (sec, nowSec) => Math.max(0, Math.round((sec - nowSec) / 60));
 
+function unavailableOption(label, feed, stopId, routes, nowSec) {
+  const far = upcomingArrivals(feed, stopId, routes, nowSec, nowSec, nowSec + 120 * 60);
+  return {
+    label,
+    unavailable: true,
+    reason: far[0]
+      ? `next ${label.split('+')[0]} not for ${minFromNow(far[0], nowSec)} min — beyond ${CONFIG.WINDOW_MIN}-min window`
+      : `no ${label.split('+')[0]} trains found at the stop in the next 2 hrs — likely a service change`,
+  };
+}
+
 function buildOptionA(irtFeed, nowSec) {
   const earliest = nowSec + CONFIG.WALK_TO_LEX_86 * 60;
   const arrivals = upcomingArrivals(irtFeed, CONFIG.STOP_6_LEX_86_S, CONFIG.ROUTES_OPTION_A, nowSec, earliest);
   const next = arrivals[0];
-  if (!next) return null;
+  if (!next) return unavailableOption('6', irtFeed, CONFIG.STOP_6_LEX_86_S, CONFIG.ROUTES_OPTION_A, nowSec);
   const nextTrainMinutes = minFromNow(next, nowSec);
   const waitAtStation = Math.max(0, nextTrainMinutes - CONFIG.WALK_TO_LEX_86);
   const totalMinutes = CONFIG.WALK_TO_LEX_86 + waitAtStation + CONFIG.RIDE_6_86_TO_28 + CONFIG.WALK_28ST_LEX_TO_WORK;
@@ -104,7 +116,7 @@ function buildOptionB(nqrwFeed, nowSec) {
   const earliestQ = nowSec + CONFIG.WALK_TO_2AV_86 * 60;
   const qArrivals = upcomingArrivals(nqrwFeed, CONFIG.STOP_Q_86_2AV_S, CONFIG.ROUTES_OPTION_B_LEG1, nowSec, earliestQ);
   const nextQ = qArrivals[0];
-  if (!nextQ) return null;
+  if (!nextQ) return unavailableOption('Q+R/W', nqrwFeed, CONFIG.STOP_Q_86_2AV_S, CONFIG.ROUTES_OPTION_B_LEG1, nowSec);
 
   const qArrivesAtHerald = nextQ + CONFIG.RIDE_Q_86_TO_HERALD * 60;
   const rwArrivals = upcomingArrivals(nqrwFeed, CONFIG.STOP_RW_HERALD_S, CONFIG.ROUTES_OPTION_B_LEG2, nowSec, qArrivesAtHerald);
@@ -154,8 +166,13 @@ function buildOptionB(nqrwFeed, nowSec) {
   };
 }
 
-function buildReason(winner, loser) {
-  if (!loser) return `${winner.label} in ${winner.nextTrainMinutes} min (other feed unavailable)`;
+function buildReason(winner, loser, allOptions) {
+  if (!loser) {
+    const unavailable = (allOptions || []).find((o) => o.unavailable);
+    return unavailable
+      ? `${winner.label} in ${winner.nextTrainMinutes} min — ${unavailable.label}: ${unavailable.reason}`
+      : `${winner.label} in ${winner.nextTrainMinutes} min`;
+  }
   const saved = loser.totalMinutes - winner.totalMinutes;
   if (winner.label === '6') {
     const heraldNote = loser.breakdown.waitForRW > 0
@@ -176,42 +193,44 @@ async function compute() {
   const irtOk = irtResult.status === 'fulfilled';
   const nqrwOk = nqrwResult.status === 'fulfilled';
 
-  const options = [];
-  if (irtOk) {
-    const a = buildOptionA(irtResult.value, nowSec);
-    if (a) options.push(a);
-  }
-  if (nqrwOk) {
-    const b = buildOptionB(nqrwResult.value, nowSec);
-    if (b) options.push(b);
-  }
+  const optionA = irtOk
+    ? buildOptionA(irtResult.value, nowSec)
+    : { label: '6', unavailable: true, reason: 'IRT feed (1/2/3/4/5/6/7) failed — try again in a minute' };
+  const optionB = nqrwOk
+    ? buildOptionB(nqrwResult.value, nowSec)
+    : { label: 'Q+R/W', unavailable: true, reason: 'NQRW feed failed — try again in a minute' };
+  const options = [optionA, optionB];
+  const valid = options.filter((o) => !o.unavailable);
 
-  if (options.length === 0) {
+  const fetchedAt = new Date().toISOString();
+  const degraded = !irtOk || !nqrwOk;
+
+  if (valid.length === 0) {
     return {
       status: 502,
       body: {
         recommendation: null,
-        reason: irtOk || nqrwOk
-          ? 'No upcoming trains in the realtime feed. Check stop IDs.'
-          : 'Both MTA feeds failed. Try again in a minute.',
-        options: [],
-        fetchedAt: new Date().toISOString(),
-        degraded: true,
+        reason: degraded
+          ? 'Both MTA feeds failed — try again in a minute'
+          : 'No trains in either option right now',
+        options,
+        fetchedAt,
+        degraded,
       },
     };
   }
 
-  const winner = options.reduce((a, b) => (a.totalMinutes <= b.totalMinutes ? a : b));
-  const loser = options.find(o => o !== winner) || null;
+  const winner = valid.reduce((a, b) => (a.totalMinutes <= b.totalMinutes ? a : b));
+  const loser = valid.find((o) => o !== winner) || null;
 
   return {
     status: 200,
     body: {
       recommendation: winner.label,
-      reason: buildReason(winner, loser),
+      reason: buildReason(winner, loser, options),
       options,
-      fetchedAt: new Date().toISOString(),
-      degraded: !irtOk || !nqrwOk,
+      fetchedAt,
+      degraded,
     },
   };
 }
@@ -224,6 +243,12 @@ function renderLegs(legs) {
 }
 
 function renderOption(opt, isWinner) {
+  if (opt.unavailable) {
+    return `<section class="option unavailable">
+  <h2>via ${esc(opt.label)} · —</h2>
+  <p class="legs">${esc(opt.reason || 'unavailable')}</p>
+</section>`;
+  }
   return `<section class="option${isWinner ? ' winner' : ''}">
   <h2>via ${esc(opt.label)} · ${opt.totalMinutes} min</h2>
   <p class="legs">${renderLegs(opt.legs || [])}</p>
@@ -241,7 +266,13 @@ function renderHtml({ recommendation, reason, options, fetchedAt, degraded }) {
   });
   const optionBlocks = options
     .slice()
-    .sort((a, b) => (a.label === recommendation ? -1 : b.label === recommendation ? 1 : 0))
+    .sort((a, b) => {
+      if (a.label === recommendation) return -1;
+      if (b.label === recommendation) return 1;
+      if (a.unavailable && !b.unavailable) return 1;
+      if (!a.unavailable && b.unavailable) return -1;
+      return 0;
+    })
     .map((o) => renderOption(o, o.label === recommendation))
     .join('\n');
   return `<!doctype html>
@@ -278,6 +309,8 @@ h1 {
   letter-spacing: .02em; text-transform: uppercase; color: #888;
 }
 .option.winner h2 { color: inherit; font-weight: 600; }
+.option.unavailable { opacity: .55; }
+.option.unavailable .legs { font-style: italic; }
 .legs {
   font-variant-numeric: tabular-nums;
   margin: 0; color: #aaa;
