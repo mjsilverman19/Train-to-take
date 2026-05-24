@@ -1,3 +1,15 @@
 name = "train"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
+
+# Fires at 13:00 and 14:00 UTC Mon–Fri. The scheduled handler filters to
+# whichever one corresponds to 9 AM America/New_York (DST-aware).
+[triggers]
+crons = ["0 13,14 * * 1-5"]
+
+# To enable /history logging, create a KV namespace named "train-history"
+# in the Cloudflare dashboard (Workers & Pages → KV → Create namespace),
+# copy its ID, and uncomment + paste below.
+# [[kv_namespaces]]
+# binding = "HISTORY"
+# id = "PASTE_KV_NAMESPACE_ID_HERE"
